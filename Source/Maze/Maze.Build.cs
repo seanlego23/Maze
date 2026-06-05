@@ -8,7 +8,7 @@ public class Maze : ModuleRules
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 	
-		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "EnhancedInput", "PCG", "PCGExCore", "PCGExElementsProbing", "PCGExGraphs" });
+		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "EnhancedInput", "PCG", "PCGExCore", "PCGExFoundations", "PCGExElementsProbing", "PCGExGraphs" });
 
 		PrivateDependencyModuleNames.AddRange(new string[] {  });
 

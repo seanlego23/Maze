@@ -2,8 +2,8 @@
 
 #pragma once
 
+#include "PCGExOctree.h"
 #include "Core/PCGExClustersProcessor.h"
-#include "Graphs/Union/PCGExUnionProcessor.h"
 
 #include "PCGExIntersectEdges.generated.h"
 
@@ -14,6 +14,11 @@
 return MakeShared<PCGExClusterMT::TBatch<PCGEx##_CLASS::FTargetProcessor>>(const_cast<FPCGEx##_CLASS##Context*>(this), InVtx, InEdges); }
 #define PCGEX_ELEMENT_BATCH_TARGET_EDGE_IMPL_ADV(_CLASS) TSharedPtr<PCGExClusterMT::IBatch> FPCGEx##_CLASS##Context::CreateTargetEdgeBatchInstance(const TSharedRef<PCGExData::FPointIO>& InVtx, TArrayView<TSharedRef<PCGExData::FPointIO>> InEdges) const{ \
 return MakeShared<PCGEx##_CLASS::FTargetBatch>(const_cast<FPCGEx##_CLASS##Context*>(this), InVtx, InEdges); }
+
+namespace PCGExIntersectEdges
+{
+class FTargetProcessor;
+}
 
 namespace PCGExIntersectEdgesLabels
 {
@@ -31,7 +36,7 @@ class UPCGExIntersectEdgesSettings : public UPCGExClustersProcessorSettings
 public:
 	//~Begin UPCGSettings
 #if WITH_EDITOR
-	PCGEX_NODE_INFOS(FuseClusters, "Cluster : Intersect Edges", "Finds Edge/Edge intersections between source and target edges.");
+	PCGEX_NODE_INFOS(IntersectEdges, "Cluster : Intersect Edges", "Finds Edge/Edge intersections between source and target edges.");
 	virtual FLinearColor GetNodeTitleColor() const override
 	{
 		return PCGEX_NODE_COLOR_NAME(ClusterOp);
@@ -56,6 +61,10 @@ public:
 
 struct FPCGExIntersectEdgesContext final : FPCGExClustersProcessorContext
 {
+	friend class UPCGExIntersectEdgesSettings;
+	friend class FPCGExIntersectEdgesElement;
+	friend class PCGExIntersectEdges::FTargetProcessor;
+
 	TSharedPtr<PCGExData::FPointIOCollection> TargetPoints;
 	TSharedPtr<PCGExData::FPointIOCollection> TargetEdges;
 	TSharedPtr<PCGExClusters::FDataLibrary> TargetClusterDataLibrary;
@@ -63,21 +72,6 @@ struct FPCGExIntersectEdgesContext final : FPCGExClustersProcessorContext
 
 	TSharedPtr<PCGExData::FPointIO> CurrentTargetIO;
 
-	/*friend class UPCGExFuseClustersSettings;
-	friend class FPCGExFuseClustersElement;
-	friend class PCGExFuseClusters::FProcessor;
-
-	TArray<TSharedRef<PCGExData::FFacade>> VtxFacades;
-	TSharedPtr<PCGExGraphs::FUnionGraph> UnionGraph;
-	TSharedPtr<PCGExData::FFacade> UnionDataFacade;
-
-	FPCGExCarryOverDetails VtxCarryOverDetails;
-	FPCGExCarryOverDetails EdgesCarryOverDetails;
-
-	TSharedPtr<PCGExGraphs::FUnionProcessor> UnionProcessor;
-
-protected:
-	PCGEX_ELEMENT_BATCH_EDGE_DECL*/
 protected:
 
 	virtual TSharedPtr<PCGExClusterMT::IBatch> CreateTargetEdgeBatchInstance(const TSharedRef<PCGExData::FPointIO>& InVtx, TArrayView<TSharedRef<PCGExData::FPointIO>> InEdges) const;
@@ -93,9 +87,20 @@ protected:
 	TArray<TSharedPtr<PCGExClusterMT::IBatch>> TargetBatches;
 	TArray<TSharedRef<PCGExData::FFacade>> TargetEdgesDataFacades;
 
+	TSharedPtr<PCGExOctree::FItemOctree> TargetEdgeOctree;
+	FBox TargetEdgeOctreeBounds;
+
 	int32 CurrentTargetPointIOIndex = -1;
 
+	bool bSkipTargetClusterBatchCompletionStep = false;
+	bool bDoTargetClusterBatchWritingStep = false;
+
 	bool StartProcessingTargetClusters(FBatchProcessingValidateEntries&& ValidateEntries, FBatchProcessingInitEdgeBatch&& InitBatch);
+
+	virtual void TargetClusterProcessing_InitialProcessingDone();
+	virtual void TargetClusterProcessing_WorkComplete();
+	virtual void TargetClusterProcessing_WritingDone();
+	virtual void TargetClusterProcessing_GraphCompilationDone();
 };
 
 class FPCGExIntersectEdgesElement final : public FPCGExClustersProcessorElement
@@ -109,8 +114,17 @@ protected:
 
 namespace PCGExIntersectEdges
 {
-	// TODO : Batch-preload vtx & edges attributes we'll want to blend
-	// We'll need a custom FBatch to handle it
+
+namespace States
+{
+
+PCGEX_CTX_STATE(MTState_TargetClusterProcessing)
+PCGEX_CTX_STATE(MTState_TargetClusterCompletingWork)
+PCGEX_CTX_STATE(MTState_TargetClusterWriting)
+
+PCGEX_CTX_STATE(State_TargetGraphDone)
+
+}
 
 class FTargetProcessor final : public PCGExClusterMT::TProcessor<FPCGExIntersectEdgesContext, UPCGExIntersectEdgesSettings>
 {
@@ -129,6 +143,9 @@ public:
 	virtual ~FTargetProcessor() override;
 
 	virtual bool Process(const TSharedPtr<PCGExMT::FTaskManager>& InTaskManager) override;
+
+	virtual void CompleteWork() override;
+	virtual void Write() override;
 
 };
 }

@@ -2,8 +2,11 @@
 
 #include "PCG/PCGExIntersectEdges.h"
 
+#include "Clusters/PCGExCluster.h"
 #include "Clusters/PCGExClusterDataLibrary.h"
 #include "Clusters/PCGExClustersHelpers.h"
+#include "Data/PCGExData.h"
+#include "Data/PCGExPointIO.h"
 
 #define LOCTEXT_NAMESPACE "PCGExGraphSettings"
 
@@ -112,7 +115,9 @@ bool FPCGExIntersectEdgesContext::StartProcessingTargetClusters(FBatchProcessing
 		return false;
 	}
 
-	SetState(PCGExClusterMT::MTState_ClusterProcessing);
+	bBatchProcessingEnabled = true;
+
+	SetState(PCGExIntersectEdges::States::MTState_TargetClusterProcessing);
 	PCGEX_ASYNC_SCHEDULING_SCOPE(GetTaskManager(), true)
 	for (const TSharedPtr<PCGExClusterMT::IBatch>& Batch : TargetBatches)
 	{
@@ -120,6 +125,80 @@ bool FPCGExIntersectEdgesContext::StartProcessingTargetClusters(FBatchProcessing
 	}
 
 	return false;
+}
+
+void FPCGExIntersectEdgesContext::TargetClusterProcessing_InitialProcessingDone()
+{
+}
+
+void FPCGExIntersectEdgesContext::TargetClusterProcessing_WorkComplete()
+{
+	TargetEdgeOctree = MakeShared<PCGExOctree::FItemOctree>(TargetEdgeOctreeBounds.GetCenter(), (TargetEdgeOctreeBounds.GetExtent() + FVector(10)).Length());
+}
+
+void FPCGExIntersectEdgesContext::TargetClusterProcessing_WritingDone()
+{
+}
+
+void FPCGExIntersectEdgesContext::TargetClusterProcessing_GraphCompilationDone()
+{
+}
+
+bool FPCGExIntersectEdgesContext::ProcessTargetClusters(const PCGExCommon::ContextState NextStateId)
+{
+	PCGEX_ON_ASYNC_STATE_READY_INTERNAL(PCGExIntersectEdges::States::MTState_TargetClusterProcessing)
+	{
+		TargetClusterProcessing_InitialProcessingDone();
+		SetState(PCGExIntersectEdges::States::MTState_TargetClusterCompletingWork);
+		if (!bSkipTargetClusterBatchCompletionStep)
+		{
+			PCGEX_ASYNC_SCHEDULING_SCOPE(TaskManager, true)
+			for (const TSharedPtr<PCGExClusterMT::IBatch>& Batch : TargetBatches)
+			{
+				Batch->CompleteWork();
+			}
+			return false;
+		}
+	}
+
+	PCGEX_ON_ASYNC_STATE_READY_INTERNAL(PCGExIntersectEdges::States::MTState_TargetClusterCompletingWork)
+	{
+		if (!bSkipTargetClusterBatchCompletionStep)
+		{
+			TargetClusterProcessing_WorkComplete();
+		}
+
+		if (bDoTargetClusterBatchWritingStep)
+		{
+			SetState(PCGExIntersectEdges::States::MTState_TargetClusterWriting);
+			PCGEX_ASYNC_SCHEDULING_SCOPE(TaskManager, true)
+			for (const TSharedPtr<PCGExClusterMT::IBatch>& Batch : TargetBatches)
+			{
+				Batch->Write();
+			}
+			return false;
+		}
+		bBatchProcessingEnabled = false;
+		if (NextStateId == PCGExCommon::States::State_Done)
+		{
+			Done();
+		}
+		SetState(NextStateId);
+	}
+
+	PCGEX_ON_ASYNC_STATE_READY_INTERNAL(PCGExIntersectEdges::States::MTState_TargetClusterWriting)
+	{
+		TargetClusterProcessing_WritingDone();
+
+		bBatchProcessingEnabled = false;
+		if (NextStateId == PCGExCommon::States::State_Done)
+		{
+			Done();
+		}
+		SetState(NextStateId);
+	}
+
+	return !IsWaitingForTasks();
 }
 
 #pragma endregion
@@ -159,6 +238,10 @@ bool FPCGExIntersectEdgesElement::Boot(FPCGExContext* InContext) const
 		PCGEX_LOG_MISSING_INPUT(Context, FTEXT("Could not find any valid vtx/edge pairs with target edges."))
 		return false;
 	}
+
+	Context->bDoTargetClusterBatchWritingStep = true;
+
+	return true;
 }
 
 bool FPCGExIntersectEdgesElement::AdvanceWork(FPCGExContext* InContext, const UPCGExSettings* InSettings) const
@@ -167,6 +250,20 @@ bool FPCGExIntersectEdgesElement::AdvanceWork(FPCGExContext* InContext, const UP
 
 	PCGEX_CONTEXT_AND_SETTINGS(IntersectEdges)
 	PCGEX_EXECUTION_CHECK
+	PCGEX_ON_INITIAL_EXECUTION
+	{
+		if (!Context->StartProcessingTargetClusters([](const TSharedPtr<PCGExData::FPointIOTaggedEntries>& Entries) { return true; }, [&](const TSharedPtr<PCGExClusterMT::IBatch>& NewBatch)
+		{
+			NewBatch->bRequiresWriteStep = true;
+			NewBatch->bForceSingleThreadedCompletion = true;
+			NewBatch->bForceSingleThreadedWrite = true;
+		}))
+		{
+			return Context->CancelExecution(TEXT("Could not build any target clusters."));
+		}
+	}
+
+	PCGEX_TARGET_CLUSTER_BATCH_PROCESSING(PCGExIntersectEdges::States::State_TargetGraphDone)
 
 	return false;
 }
@@ -189,7 +286,22 @@ bool FTargetProcessor::Process(const TSharedPtr<PCGExMT::FTaskManager>& InTaskMa
 		return false;
 	}
 
+	Cluster->RebuildEdgeOctree();
 
+	return true;
+}
+
+void FTargetProcessor::CompleteWork()
+{
+	Context->TargetEdgeOctreeBounds += Cluster->GetEdgeOctree()->GetRootBounds().GetBox();
+}
+
+void FTargetProcessor::Write()
+{
+	Cluster->GetEdgeOctree()->FindAllElements([&](const PCGExOctree::FItem& Item)
+	{
+		Context->TargetEdgeOctree->AddElement(Item);
+	});
 }
 
 }
